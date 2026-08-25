@@ -141,7 +141,7 @@ docker_build:
 
     - docker build --pull -t "${IMAGE_URI}" .
 
-    - docker save "${IMAGE_URI}" -o "${APP_DIR}/image.tar"
+    - docker save "${IMAGE_URI}" > image.tar
 
   artifacts:
 
