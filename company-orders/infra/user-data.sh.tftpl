@@ -1,0 +1,51 @@
+#!/bin/bash
+set -euxo pipefail
+
+dnf update -y
+dnf install -y docker amazon-cloudwatch-agent
+systemctl enable --now docker
+
+aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${repository_url}
+
+cat >/opt/app.env <<EOF
+DB_SECRET_ARN=${db_secret_arn}
+IMPORT_TOKEN_SECRET_ARN=${import_token_secret_arn}
+APP_VERSION=${image_tag}
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=5
+EOF
+
+docker pull ${repository_url}:${image_tag}
+
+docker rm -f order-api || true
+
+docker run -d \
+  --name order-api \
+  --restart always \
+  --env-file /opt/app.env \
+  -p 8080:8080 \
+  ${repository_url}:${image_tag}
+
+cat >/opt/cloudwatch-agent.json <<EOF
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/lib/docker/containers/*/*.log",
+            "log_group_name": "${log_group}",
+            "log_stream_name": "{instance_id}/docker",
+            "timezone": "UTC"
+          }
+        ]
+      }
+    }
+  }
+}
+EOF
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -c file:/opt/cloudwatch-agent.json -s
+
+systemctl enable amazon-cloudwatch-agent
