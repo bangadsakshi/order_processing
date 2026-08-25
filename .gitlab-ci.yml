@@ -139,10 +139,7 @@ docker_build:
 
     - cd "$PROJECT_DIR"
 
-    - docker build \
-        --pull \
-        -t "${IMAGE_URI}" \
-        .
+    - docker build --pull -t "${IMAGE_URI}" .
 
     - docker save "${IMAGE_URI}" -o image.tar
 
@@ -178,11 +175,7 @@ container_security_scan:
     - echo "Trivy container security scan"
     - echo "======================================"
 
-    - trivy image \
-        --input company-orders/image.tar \
-        --severity HIGH,CRITICAL \
-        --ignore-unfixed \
-        --exit-code 1
+    - trivy image --input company-orders/image.tar --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
 
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -221,11 +214,7 @@ push_to_ecr:
 
     - echo "Logging into ECR..."
 
-    - aws ecr get-login-password \
-        --region "${AWS_REGION}" |
-        docker login \
-        --username AWS \
-        --password-stdin "${ECR_REGISTRY}"
+    - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
   script:
 
@@ -300,11 +289,7 @@ deploy_dev:
     # --------------------------------------------------------
 
     - |
-      INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
-        --region "${AWS_REGION}" \
-        --auto-scaling-group-names "${ASG_NAME}" \
-        --query 'AutoScalingGroups[0].Instances[].InstanceId' \
-        --output text)
+      INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups --region "${AWS_REGION}" --auto-scaling-group-names "${ASG_NAME}" --query 'AutoScalingGroups[0].Instances[].InstanceId' --output text)
 
       echo "EC2 instances:"
       echo "${INSTANCE_IDS}"
@@ -332,17 +317,7 @@ deploy_dev:
         echo "Deploying to ${INSTANCE_ID}"
         echo "--------------------------------------"
 
-        COMMAND_ID=$(aws ssm send-command \
-          --region "${AWS_REGION}" \
-          --instance-ids "${INSTANCE_ID}" \
-          --document-name "AWS-RunShellScript" \
-          --comment "Deploy ${IMAGE_TAG}" \
-          --parameters commands="
-            aws ecr get-login-password --region ${AWS_REGION} |
-            docker login
-            --username AWS
-            --password-stdin
-            ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com;
+        COMMAND_ID=$(aws ssm send-command --region "${AWS_REGION}" --instance-ids "${INSTANCE_ID}" --document-name "AWS-RunShellScript" --comment "Deploy ${IMAGE_TAG}" --parameters commands="aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com;
 
             docker pull ${IMAGE_URI};
 
@@ -350,14 +325,8 @@ deploy_dev:
 
             docker rm ${CONTAINER_NAME} || true;
 
-            docker run -d
-            --restart unless-stopped
-            --name ${CONTAINER_NAME}
-            -p ${CONTAINER_PORT}:${CONTAINER_PORT}
-            ${IMAGE_URI};
-          " \
-          --query 'Command.CommandId' \
-          --output text)
+            docker run -d --restart unless-stopped --name ${CONTAINER_NAME} -p ${CONTAINER_PORT}:${CONTAINER_PORT} ${IMAGE_URI};
+          "--query 'Command.CommandId' --output text)"
 
         echo "SSM Command ID:"
         echo "${COMMAND_ID}"
@@ -389,12 +358,7 @@ verify_dev:
     - |
       for i in $(seq 1 30); do
 
-        HTTP_CODE=$(curl \
-          --silent \
-          --output /dev/null \
-          --write-out "%{http_code}" \
-          --max-time 10 \
-          "${API_URL}${HEALTH_ENDPOINT}" || true)
+        HTTP_CODE=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 10 "${API_URL}${HEALTH_ENDPOINT}" || true)
 
         echo "Attempt ${i}: HTTP ${HTTP_CODE}"
 
