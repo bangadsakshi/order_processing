@@ -13,8 +13,8 @@ max_size = 4
 db_instance_class = "db.t4g.micro"
 db_multi_az = false
 
-github_org = "YOUR_GITHUB_ORG"
-github_repo = "YOUR_GITHUB_REPO"
+github_org = "bangadsakshi"
+github_repo = "order_processing"
 
 enable_https = false
 acm_certificate_arn = ""

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, Integer, String, create_engine, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-APP_NAME = "x-company-order-service"
+APP_NAME = "company-order-service"
 DB_SECRET_ARN = os.environ["DB_SECRET_ARN"]
 IMPORT_TOKEN_SECRET_ARN = os.environ["IMPORT_TOKEN_SECRET_ARN"]
 
