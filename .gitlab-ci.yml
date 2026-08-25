@@ -137,7 +137,7 @@ docker_build:
     - echo "IMAGE URI:"
     - echo "${IMAGE_URI}"
 
-    - cd "$PROJECT_DIR"
+    - cd "$APP_DIR"
 
     - docker build --pull -t "${IMAGE_URI}" .
 
