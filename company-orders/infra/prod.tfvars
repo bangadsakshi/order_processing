@@ -13,9 +13,9 @@ max_size = 6
 db_instance_class = "db.t4g.small"
 db_multi_az = true
 
-github_org = "YOUR_GITHUB_ORG"
-github_repo = "YOUR_GITHUB_REPO"
+github_org = "bangadsakshi"
+github_repo = "order_processing"
 
 enable_https = true
-acm_certificate_arn = "YOUR_ACM_CERTIFICATE_ARN"
-root_domain = "api.example.com"
+acm_certificate_arn = ""
+root_domain = ""
