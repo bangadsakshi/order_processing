@@ -1,7 +1,7 @@
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-SQLAlchemy==2.0.43
-psycopg[binary]==3.2.9
-boto3==1.40.18
-pydantic==2.11.7
-pytest==8.3.4
+fastapi
+uvicorn[standard]
+SQLAlchemy
+psycopg[binary]
+boto3
+pydantic
+pytest
