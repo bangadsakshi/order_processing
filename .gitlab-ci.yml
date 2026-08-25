@@ -141,12 +141,12 @@ docker_build:
 
     - docker build --pull -t "${IMAGE_URI}" .
 
-    - docker save "${IMAGE_URI}" -o "${PROJECT_DIR}/image.tar"
+    - docker save "${IMAGE_URI}" -o "${APP_DIR}/image.tar"
 
   artifacts:
 
     paths:
-      - company-orders/image.tar
+      - company-orders/app/image.tar
 
     expire_in: 1 hour
 
@@ -175,7 +175,7 @@ container_security_scan:
     - echo "Trivy container security scan"
     - echo "======================================"
 
-    - trivy image --input company-orders/image.tar --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+    - trivy image --input company-orders/app/image.tar --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
 
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
