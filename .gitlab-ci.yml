@@ -7,15 +7,25 @@ stages:
   - deploy
   - verify
 
-
 # ============================================================
-# DEV VARIABLES
+# DEV CONFIGURATION
 # ============================================================
 
 variables:
+
   AWS_REGION: "ap-south-1"
 
-  ECR_REPOSITORY: "company-order-dev-repo"
+  AWS_ACCOUNT_ID: "064713308676"
+
+  PROJECT_DIR: "company-orders"
+
+  TF_ROOT: "company-orders/infra"
+
+  APP_DIR: "company-orders/app"
+
+  LAMBDA_DIR: "company-orders/lambda"
+
+  PROJECT_NAME: "company-orders"
 
   ENVIRONMENT: "dev"
 
@@ -25,13 +35,19 @@ variables:
 
   HEALTH_ENDPOINT: "/health"
 
-  # Docker-in-Docker
+  ECR_REPOSITORY: "company-order-dev-repo"
+
+  # ----------------------------------------------------------
+  # Docker
+  # ----------------------------------------------------------
+
   DOCKER_HOST: "tcp://docker:2375"
+
   DOCKER_TLS_CERTDIR: ""
 
 
 # ============================================================
-# 1. Terraform validation
+# 1. TERRAFORM VALIDATION
 # ============================================================
 
 terraform_validate:
@@ -42,7 +58,16 @@ terraform_validate:
     entrypoint: [""]
 
   script:
-    - cd infra
+
+    - echo "======================================"
+    - echo "Terraform validation"
+    - echo "======================================"
+
+    - cd "$TF_ROOT"
+
+    - pwd
+
+    - ls -la
 
     - terraform fmt -check -recursive
 
@@ -55,7 +80,7 @@ terraform_validate:
 
 
 # ============================================================
-# 2. Application tests
+# 2. APPLICATION TEST
 # ============================================================
 
 application_test:
@@ -64,9 +89,17 @@ application_test:
   image: python:3.12-slim
 
   before_script:
+
+    - python --version
+
+    - cd "$PROJECT_DIR"
+
     - pip install --no-cache-dir -r app/requirements.txt
 
   script:
+
+    - echo "Running application tests..."
+
     - python -m pytest -q
 
   rules:
@@ -74,7 +107,7 @@ application_test:
 
 
 # ============================================================
-# 3. Lint
+# 3. LINT
 # ============================================================
 
 lint:
@@ -83,23 +116,28 @@ lint:
   image: python:3.12-slim
 
   before_script:
+
     - pip install --no-cache-dir ruff
 
   script:
-    - ruff check app/ lambda/
+
+    - echo "Running Python lint..."
+
+    - ruff check "$APP_DIR" "$LAMBDA_DIR"
 
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 
 # ============================================================
-# 4. Build Docker image
+# 4. BUILD DOCKER IMAGE
 # ============================================================
 
 docker_build:
   stage: build
 
-  image: docker:27
+  image:
+    name: docker:27
 
   services:
     - name: docker:27-dind
@@ -107,28 +145,35 @@ docker_build:
         - "--tls=false"
 
   before_script:
+
     - docker info
 
   script:
+
+    - echo "======================================"
+    - echo "Building Docker image"
+    - echo "======================================"
 
     - export IMAGE_TAG="${CI_COMMIT_SHORT_SHA}"
 
     - export IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-    - echo "Building:"
+    - echo "IMAGE URI:"
     - echo "${IMAGE_URI}"
+
+    - cd "$PROJECT_DIR"
 
     - docker build \
         --pull \
         -t "${IMAGE_URI}" \
         .
 
-    # Save image for security scan
     - docker save "${IMAGE_URI}" -o image.tar
 
   artifacts:
+
     paths:
-      - image.tar
+      - company-orders/image.tar
 
     expire_in: 1 hour
 
@@ -137,7 +182,7 @@ docker_build:
 
 
 # ============================================================
-# 5. Trivy container security scan
+# 5. CONTAINER SECURITY SCAN
 # ============================================================
 
 container_security_scan:
@@ -147,15 +192,20 @@ container_security_scan:
     name: aquasec/trivy:latest
     entrypoint: [""]
 
-  dependencies:
-    - docker_build
+  needs:
+    - job: docker_build
+      artifacts: true
 
   script:
 
-    - trivy image
-        --input image.tar
-        --severity HIGH,CRITICAL
-        --ignore-unfixed
+    - echo "======================================"
+    - echo "Trivy container security scan"
+    - echo "======================================"
+
+    - trivy image \
+        --input company-orders/image.tar \
+        --severity HIGH,CRITICAL \
+        --ignore-unfixed \
         --exit-code 1
 
   rules:
@@ -163,26 +213,37 @@ container_security_scan:
 
 
 # ============================================================
-# 6. Push image to ECR
+# 6. PUSH IMAGE TO ECR
 # ============================================================
 
 push_to_ecr:
   stage: push
 
   image:
-    name: amazon/aws-cli:2
-    entrypoint: [""]
+    name: docker:27
 
-  dependencies:
-    - docker_build
+  services:
+    - name: docker:27-dind
+      command:
+        - "--tls=false"
+
+  needs:
+    - job: docker_build
+      artifacts: true
+
+    - job: container_security_scan
 
   before_script:
 
-    - yum install -y docker
+    - apk add --no-cache aws-cli
+
+    - aws --version
 
     - aws sts get-caller-identity
 
     - export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+    - echo "Logging into ECR..."
 
     - aws ecr get-login-password \
         --region "${AWS_REGION}" |
@@ -196,7 +257,10 @@ push_to_ecr:
 
     - export IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-    - docker load -i image.tar
+    - docker load -i company-orders/image.tar
+
+    - echo "Pushing:"
+    - echo "${IMAGE_URI}"
 
     - docker push "${IMAGE_URI}"
 
@@ -205,6 +269,7 @@ push_to_ecr:
     - echo "IMAGE_URI=${IMAGE_URI}" >> build.env
 
   artifacts:
+
     reports:
       dotenv: build.env
 
@@ -213,7 +278,7 @@ push_to_ecr:
 
 
 # ============================================================
-# 7. Deploy DEV
+# 7. DEPLOY DEV
 # ============================================================
 
 deploy_dev:
@@ -229,74 +294,121 @@ deploy_dev:
 
   before_script:
 
+    - aws --version
+
     - aws sts get-caller-identity
 
   script:
 
-    - echo "Deploying DEV application..."
+    - echo "======================================"
+    - echo "Deploying DEV"
+    - echo "======================================"
 
     - echo "Image:"
     - echo "${IMAGE_URI}"
 
+
     # --------------------------------------------------------
-    # Send deployment command to EC2 instances using SSM
+    # Find ASG
     # --------------------------------------------------------
 
     - |
-      COMMAND_ID=$(aws ssm send-command \
+      ASG_NAME="${PROJECT_NAME}-${ENVIRONMENT}-asg"
+
+      echo "ASG:"
+      echo "${ASG_NAME}"
+
+
+    # --------------------------------------------------------
+    # Get EC2 instances from ASG
+    # --------------------------------------------------------
+
+    - |
+      INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
         --region "${AWS_REGION}" \
-        --targets "Key=tag:Name,Values=${PROJECT_NAME}-dev-app" \
-        --document-name "AWS-RunShellScript" \
-        --comment "Deploy ${IMAGE_TAG}" \
-        --parameters commands="[
-          \"aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com\",
-          \"docker pull ${IMAGE_URI}\",
-          \"docker stop ${CONTAINER_NAME} || true\",
-          \"docker rm ${CONTAINER_NAME} || true\",
-          \"docker run -d --restart unless-stopped --name ${CONTAINER_NAME} -p ${CONTAINER_PORT}:${CONTAINER_PORT} ${IMAGE_URI}\"
-        ]" \
-        --query "Command.CommandId" \
+        --auto-scaling-group-names "${ASG_NAME}" \
+        --query 'AutoScalingGroups[0].Instances[].InstanceId' \
         --output text)
 
-      echo "SSM Command ID: ${COMMAND_ID}"
+      echo "EC2 instances:"
+      echo "${INSTANCE_IDS}"
 
-      echo "Waiting for deployment..."
 
-      sleep 15
+    # --------------------------------------------------------
+    # Make sure instances exist
+    # --------------------------------------------------------
 
-      aws ssm wait command-executed \
-        --command-id "${COMMAND_ID}" \
-        --instance-id "${APP_INSTANCE_ID}" \
-        --region "${AWS_REGION}"
+    - |
+      if [ -z "${INSTANCE_IDS}" ] || [ "${INSTANCE_IDS}" = "None" ]; then
+        echo "ERROR: No EC2 instances found in ASG."
+        exit 1
+      fi
 
-  environment:
-    name: dev
 
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    # --------------------------------------------------------
+    # Deploy using AWS Systems Manager
+    # --------------------------------------------------------
+
+    - |
+      for INSTANCE_ID in ${INSTANCE_IDS}; do
+
+        echo "--------------------------------------"
+        echo "Deploying to ${INSTANCE_ID}"
+        echo "--------------------------------------"
+
+        COMMAND_ID=$(aws ssm send-command \
+          --region "${AWS_REGION}" \
+          --instance-ids "${INSTANCE_ID}" \
+          --document-name "AWS-RunShellScript" \
+          --comment "Deploy ${IMAGE_TAG}" \
+          --parameters commands="
+            aws ecr get-login-password --region ${AWS_REGION} |
+            docker login
+            --username AWS
+            --password-stdin
+            ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com;
+
+            docker pull ${IMAGE_URI};
+
+            docker stop ${CONTAINER_NAME} || true;
+
+            docker rm ${CONTAINER_NAME} || true;
+
+            docker run -d
+            --restart unless-stopped
+            --name ${CONTAINER_NAME}
+            -p ${CONTAINER_PORT}:${CONTAINER_PORT}
+            ${IMAGE_URI};
+          " \
+          --query 'Command.CommandId' \
+          --output text)
+
+        echo "SSM Command ID:"
+        echo "${COMMAND_ID}"
+
+      done
 
 
 # ============================================================
-# 8. Verify application
+# 8. VERIFY DEV
 # ============================================================
 
 verify_dev:
   stage: verify
 
   image:
-    name: amazon/aws-cli:2
+    name: curlimages/curl:8.10.1
     entrypoint: [""]
 
   needs:
-    - deploy_dev
-
-  before_script:
-
-    - yum install -y curl
+    - job: deploy_dev
 
   script:
 
-    - echo "Checking DEV application..."
+    - echo "======================================"
+    - echo "Checking DEV application health"
+    - echo "======================================"
+
 
     - |
       for i in $(seq 1 30); do
@@ -308,23 +420,28 @@ verify_dev:
           --max-time 10 \
           "${API_URL}${HEALTH_ENDPOINT}" || true)
 
-        echo "Health check: HTTP ${HTTP_CODE}"
+        echo "Attempt ${i}: HTTP ${HTTP_CODE}"
 
         if [ "${HTTP_CODE}" = "200" ]; then
-          echo "DEV deployment successful."
+
+          echo "======================================"
+          echo "DEV DEPLOYMENT SUCCESSFUL"
+          echo "======================================"
+
           exit 0
+
         fi
 
         sleep 10
 
       done
 
-      echo "DEV application health check failed."
 
-      exit 1
+    - echo "======================================"
+    - echo "DEV DEPLOYMENT FAILED"
+    - echo "======================================"
 
-  environment:
-    name: dev
+    - exit 1
 
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
