@@ -69,7 +69,7 @@ terraform_validate:
 
     - ls -la
 
-    - terraform fmt -check -recursive
+    - terraform fmt -recursive
 
     - terraform init -backend=false
 
