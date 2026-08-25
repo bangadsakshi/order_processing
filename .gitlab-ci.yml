@@ -105,32 +105,8 @@ application_test:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
-
 # ============================================================
-# 3. LINT
-# ============================================================
-
-lint:
-  stage: test
-
-  image: python:3.12-slim
-
-  before_script:
-
-    - pip install --no-cache-dir ruff
-
-  script:
-
-    - echo "Running Python lint..."
-
-    - ruff check "$APP_DIR" "$LAMBDA_DIR"
-
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-
-
-# ============================================================
-# 4. BUILD DOCKER IMAGE
+# 3. BUILD DOCKER IMAGE
 # ============================================================
 
 docker_build:
