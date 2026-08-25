@@ -1,0 +1,330 @@
+stages:
+  - validate
+  - test
+  - security
+  - build
+  - push
+  - deploy
+  - verify
+
+
+# ============================================================
+# DEV VARIABLES
+# ============================================================
+
+variables:
+  AWS_REGION: "ap-south-1"
+
+  ECR_REPOSITORY: "company-order-dev-repo"
+
+  ENVIRONMENT: "dev"
+
+  CONTAINER_NAME: "order-service"
+
+  CONTAINER_PORT: "8000"
+
+  HEALTH_ENDPOINT: "/health"
+
+  # Docker-in-Docker
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+
+
+# ============================================================
+# 1. Terraform validation
+# ============================================================
+
+terraform_validate:
+  stage: validate
+
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+
+  script:
+    - cd infra
+
+    - terraform fmt -check -recursive
+
+    - terraform init -backend=false
+
+    - terraform validate
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+
+# ============================================================
+# 2. Application tests
+# ============================================================
+
+application_test:
+  stage: test
+
+  image: python:3.12-slim
+
+  before_script:
+    - pip install --no-cache-dir -r app/requirements.txt
+
+  script:
+    - python -m pytest -q
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+
+# ============================================================
+# 3. Lint
+# ============================================================
+
+lint:
+  stage: test
+
+  image: python:3.12-slim
+
+  before_script:
+    - pip install --no-cache-dir ruff
+
+  script:
+    - ruff check app/ lambda/
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+
+# ============================================================
+# 4. Build Docker image
+# ============================================================
+
+docker_build:
+  stage: build
+
+  image: docker:27
+
+  services:
+    - name: docker:27-dind
+      command:
+        - "--tls=false"
+
+  before_script:
+    - docker info
+
+  script:
+
+    - export IMAGE_TAG="${CI_COMMIT_SHORT_SHA}"
+
+    - export IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+    - echo "Building:"
+    - echo "${IMAGE_URI}"
+
+    - docker build \
+        --pull \
+        -t "${IMAGE_URI}" \
+        .
+
+    # Save image for security scan
+    - docker save "${IMAGE_URI}" -o image.tar
+
+  artifacts:
+    paths:
+      - image.tar
+
+    expire_in: 1 hour
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+
+# ============================================================
+# 5. Trivy container security scan
+# ============================================================
+
+container_security_scan:
+  stage: security
+
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+
+  dependencies:
+    - docker_build
+
+  script:
+
+    - trivy image
+        --input image.tar
+        --severity HIGH,CRITICAL
+        --ignore-unfixed
+        --exit-code 1
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+
+# ============================================================
+# 6. Push image to ECR
+# ============================================================
+
+push_to_ecr:
+  stage: push
+
+  image:
+    name: amazon/aws-cli:2
+    entrypoint: [""]
+
+  dependencies:
+    - docker_build
+
+  before_script:
+
+    - yum install -y docker
+
+    - aws sts get-caller-identity
+
+    - export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+    - aws ecr get-login-password \
+        --region "${AWS_REGION}" |
+        docker login \
+        --username AWS \
+        --password-stdin "${ECR_REGISTRY}"
+
+  script:
+
+    - export IMAGE_TAG="${CI_COMMIT_SHORT_SHA}"
+
+    - export IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+    - docker load -i image.tar
+
+    - docker push "${IMAGE_URI}"
+
+    - echo "IMAGE_TAG=${IMAGE_TAG}" > build.env
+
+    - echo "IMAGE_URI=${IMAGE_URI}" >> build.env
+
+  artifacts:
+    reports:
+      dotenv: build.env
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+
+# ============================================================
+# 7. Deploy DEV
+# ============================================================
+
+deploy_dev:
+  stage: deploy
+
+  image:
+    name: amazon/aws-cli:2
+    entrypoint: [""]
+
+  needs:
+    - job: push_to_ecr
+      artifacts: true
+
+  before_script:
+
+    - aws sts get-caller-identity
+
+  script:
+
+    - echo "Deploying DEV application..."
+
+    - echo "Image:"
+    - echo "${IMAGE_URI}"
+
+    # --------------------------------------------------------
+    # Send deployment command to EC2 instances using SSM
+    # --------------------------------------------------------
+
+    - |
+      COMMAND_ID=$(aws ssm send-command \
+        --region "${AWS_REGION}" \
+        --targets "Key=tag:Name,Values=${PROJECT_NAME}-dev-app" \
+        --document-name "AWS-RunShellScript" \
+        --comment "Deploy ${IMAGE_TAG}" \
+        --parameters commands="[
+          \"aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com\",
+          \"docker pull ${IMAGE_URI}\",
+          \"docker stop ${CONTAINER_NAME} || true\",
+          \"docker rm ${CONTAINER_NAME} || true\",
+          \"docker run -d --restart unless-stopped --name ${CONTAINER_NAME} -p ${CONTAINER_PORT}:${CONTAINER_PORT} ${IMAGE_URI}\"
+        ]" \
+        --query "Command.CommandId" \
+        --output text)
+
+      echo "SSM Command ID: ${COMMAND_ID}"
+
+      echo "Waiting for deployment..."
+
+      sleep 15
+
+      aws ssm wait command-executed \
+        --command-id "${COMMAND_ID}" \
+        --instance-id "${APP_INSTANCE_ID}" \
+        --region "${AWS_REGION}"
+
+  environment:
+    name: dev
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+
+# ============================================================
+# 8. Verify application
+# ============================================================
+
+verify_dev:
+  stage: verify
+
+  image:
+    name: amazon/aws-cli:2
+    entrypoint: [""]
+
+  needs:
+    - deploy_dev
+
+  before_script:
+
+    - yum install -y curl
+
+  script:
+
+    - echo "Checking DEV application..."
+
+    - |
+      for i in $(seq 1 30); do
+
+        HTTP_CODE=$(curl \
+          --silent \
+          --output /dev/null \
+          --write-out "%{http_code}" \
+          --max-time 10 \
+          "${API_URL}${HEALTH_ENDPOINT}" || true)
+
+        echo "Health check: HTTP ${HTTP_CODE}"
+
+        if [ "${HTTP_CODE}" = "200" ]; then
+          echo "DEV deployment successful."
+          exit 0
+        fi
+
+        sleep 10
+
+      done
+
+      echo "DEV application health check failed."
+
+      exit 1
+
+  environment:
+    name: dev
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
